@@ -1,0 +1,21 @@
+# cert-check service configuration
+# Format: service_name  hostname[:port]  [proxy_ip:proxy_port]
+#
+# If proxy is specified, the connection goes to proxy_ip:proxy_port with SNI set to hostname.
+# This is useful when all services are behind a reverse proxy (Traefik, Nginx, etc.)
+#
+# If no proxy is specified, the connection goes directly to hostname:443.
+
+# --- Direct checks (no reverse proxy) ---
+# google      google.com
+
+# --- Via reverse proxy (all SNI through one IP) ---
+# Common pattern: all services terminate TLS at the reverse proxy
+# proxy_ip is your Traefik/Nginx/Caddy IP
+
+# traefik       traefik.example.com       192.168.1.10:443
+# forgejo       forgejo.example.com       192.168.1.10:443
+# vaultwarden   vaultwarden.example.com   192.168.1.10:443
+# homepage      homepage.example.com      192.168.1.10:443
+# jellyfin      jellyfin.example.com      192.168.1.10:443
+# immich        immich.example.com        192.168.1.10:443

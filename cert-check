@@ -1,0 +1,180 @@
+#!/bin/bash
+# cert-check — Check TLS certificate expiration for services behind a reverse proxy
+#
+# Checks certificates via SNI against a single reverse proxy endpoint (e.g. Traefik, Nginx)
+# or directly against individual hosts.
+#
+# Usage: cert-check [all|service1 service2...] [--warn N] [--config FILE]
+# Exit codes: 0=all OK, 1=warning (expiring soon), 2=critical (expired or unreachable)
+
+set -euo pipefail
+
+# Defaults
+WARN_DAYS="${CERT_WARN_DAYS:-14}"
+CONFIG_FILE="${CERT_CHECK_CONFIG:-/etc/cert-check/services.conf}"
+
+# Colors (disabled if not a terminal)
+if [ -t 1 ]; then
+  RED='\033[0;31m'; YELLOW='\033[1;33m'; GREEN='\033[0;32m'; NC='\033[0m'
+else
+  RED=''; YELLOW=''; GREEN=''; NC=''
+fi
+
+usage() {
+  cat <<EOF
+Usage: cert-check [all|service1 service2...] [--warn N] [--config FILE]
+
+Options:
+  all          Check all services in config
+  --warn N     Warning threshold in days (default: 14, env: CERT_WARN_DAYS)
+  --config F   Config file path (default: /etc/cert-check/services.conf)
+  --help       Show this help
+
+Config format (one service per line):
+  service_name  hostname:port  [proxy_ip:proxy_port]
+
+Examples:
+  # Direct check
+  traefik  traefik.example.com:443
+
+  # Via reverse proxy (SNI)
+  forgejo  forgejo.example.com  192.168.1.10:443
+
+Exit codes:
+  0  All certificates OK
+  1  At least one certificate expiring within warning threshold
+  2  At least one certificate expired or unreachable
+EOF
+  exit 0
+}
+
+# Load services from config file
+declare -A SERVICES=()
+declare -A PROXIES=()
+
+load_config() {
+  if [ ! -f "$CONFIG_FILE" ]; then
+    echo "ERROR: Config file not found: $CONFIG_FILE"
+    echo "Copy services.conf.example to $CONFIG_FILE and edit it."
+    exit 2
+  fi
+
+  while IFS= read -r line; do
+    # Skip comments and empty lines
+    [[ "$line" =~ ^[[:space:]]*# ]] && continue
+    [[ -z "${line// /}" ]] && continue
+
+    local name host proxy
+    read -r name host proxy <<< "$line"
+    SERVICES["$name"]="$host"
+    if [ -n "${proxy:-}" ]; then
+      PROXIES["$name"]="$proxy"
+    fi
+  done < "$CONFIG_FILE"
+}
+
+check_cert() {
+  local name="$1"
+  local host="$2"
+  local connect_to="${3:-$host}"
+
+  # Extract hostname for SNI (strip port if present)
+  local sni_host="${host%%:*}"
+  local connect_addr="${connect_to}"
+
+  # Add default port if not specified
+  [[ "$connect_addr" != *:* ]] && connect_addr="${connect_addr}:443"
+
+  local enddate
+  enddate=$(echo | openssl s_client -connect "$connect_addr" -servername "$sni_host" 2>/dev/null \
+    | openssl x509 -noout -enddate 2>/dev/null \
+    | cut -d= -f2) || true
+
+  if [ -z "$enddate" ]; then
+    echo -e "${RED}FAIL${NC} $name — cannot read certificate ($connect_addr)"
+    return 2
+  fi
+
+  local exp_epoch now_epoch days_left
+  exp_epoch=$(date -d "$enddate" +%s 2>/dev/null) || true
+  now_epoch=$(date +%s)
+
+  if [ -z "$exp_epoch" ]; then
+    echo -e "${RED}FAIL${NC} $name — cannot parse date: $enddate"
+    return 2
+  fi
+
+  days_left=$(( (exp_epoch - now_epoch) / 86400 ))
+
+  if [ "$days_left" -lt 0 ]; then
+    echo -e "${RED}EXPIRED${NC} $name — expired $(( -days_left ))d ago ($enddate)"
+    return 2
+  elif [ "$days_left" -lt "$WARN_DAYS" ]; then
+    echo -e "${YELLOW}WARNING${NC} $name — expires in ${days_left}d ($enddate)"
+    return 1
+  else
+    echo -e "${GREEN}OK${NC} $name — ${days_left}d remaining ($enddate)"
+    return 0
+  fi
+}
+
+# Parse args
+targets=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --warn) WARN_DAYS="${2:-14}"; shift 2 ;;
+    --config) CONFIG_FILE="$2"; shift 2 ;;
+    --help|-h) usage ;;
+    all) targets=("__ALL__"); shift ;;
+    *) targets+=("$1"); shift ;;
+  esac
+done
+
+load_config
+
+if [ ${#targets[@]} -eq 0 ]; then
+  usage
+fi
+
+# Expand "all"
+if [ "${targets[0]:-}" = "__ALL__" ]; then
+  targets=("${!SERVICES[@]}")
+fi
+
+# Check certificates
+ok=0
+warn=0
+fail=0
+
+for name in $(echo "${targets[@]}" | tr ' ' '\n' | sort); do
+  host="${SERVICES[$name]:-}"
+  if [ -z "$host" ]; then
+    echo -e "${RED}UNKNOWN${NC} service: $name"
+    fail=$((fail + 1))
+    continue
+  fi
+
+  proxy="${PROXIES[$name]:-}"
+  rc=0
+  check_cert "$name" "$host" "${proxy:-$host}" || rc=$?
+
+  case $rc in
+    0) ok=$((ok + 1)) ;;
+    1) warn=$((warn + 1)) ;;
+    2) fail=$((fail + 1)) ;;
+  esac
+done
+
+# Summary
+total=$((ok + warn + fail))
+echo ""
+echo "---"
+echo "TOTAL: ${total} checked — ${ok} OK, ${warn} WARNING, ${fail} CRITICAL"
+
+if [ "$fail" -gt 0 ]; then
+  exit 2
+elif [ "$warn" -gt 0 ]; then
+  exit 1
+else
+  exit 0
+fi

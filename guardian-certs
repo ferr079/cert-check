@@ -1,0 +1,55 @@
+#!/bin/bash
+# guardian-certs — Wrapper for cert-check with Telegram alerts
+# Only sends notifications on WARNING or CRITICAL (silent when all OK)
+# Cron example: 0 10 * * * /usr/local/bin/guardian-certs
+
+set -euo pipefail
+
+GUARDIAN_ENV="${GUARDIAN_ENV:-/etc/cert-check/guardian.env}"
+if [ -f "$GUARDIAN_ENV" ]; then
+  source "$GUARDIAN_ENV"
+fi
+
+if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
+  echo "ERROR: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set"
+  echo "Set them in $GUARDIAN_ENV"
+  exit 1
+fi
+
+WARN_DAYS="${CERT_WARN_DAYS:-14}"
+LOG_DIR="${GUARDIAN_LOG_DIR:-/var/log/guardian-certs}"
+LOG_RETENTION="${GUARDIAN_LOG_RETENTION:-30}"
+mkdir -p "$LOG_DIR"
+
+rc=0
+result=$(cert-check all --warn "$WARN_DAYS" 2>&1) || rc=$?
+timestamp=$(date '+%Y-%m-%d %H:%M')
+
+echo "[$timestamp] exit=$rc" >> "$LOG_DIR/guardian-certs.log"
+echo "$result" >> "$LOG_DIR/guardian-certs.log"
+echo "---" >> "$LOG_DIR/guardian-certs.log"
+
+if [ "$rc" -gt 0 ]; then
+  alerts=$(echo "$result" | grep -E '^(WARNING|EXPIRED|FAIL|CRITICAL)' || true)
+  summary=$(echo "$result" | tail -1)
+
+  if [ "$rc" -eq 2 ]; then
+    emoji="🚨"; level="CRITICAL"
+  else
+    emoji="⚠️"; level="WARNING"
+  fi
+
+  message="${emoji} GUARDIAN CERTS — ${level}
+
+${alerts}
+
+${summary}
+${timestamp}"
+
+  curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+    -d "chat_id=${TELEGRAM_CHAT_ID}" \
+    -d "text=${message}" \
+    -d "parse_mode=HTML" > /dev/null 2>&1
+fi
+
+find "$LOG_DIR" -name "*.log" -mtime +${LOG_RETENTION} -delete 2>/dev/null || true
