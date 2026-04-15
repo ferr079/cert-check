@@ -1,5 +1,7 @@
 # cert-check
 
+[![ShellCheck](https://github.com/ferr079/cert-check/actions/workflows/lint.yml/badge.svg)](https://github.com/ferr079/cert-check/actions/workflows/lint.yml)
+
 Lightweight TLS certificate expiration monitor for self-hosted services. Designed for homelabs using a reverse proxy (Traefik, Nginx, Caddy) with internal CAs like step-ca or Let's Encrypt.
 
 ## What it does
