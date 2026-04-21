@@ -12,11 +12,11 @@ Checks the TLS certificate expiration date for each configured service via SNI, 
 $ cert-check all
 OK authentik — 76d remaining (Jun 30 2026)
 OK forgejo — 76d remaining (Jun 30 2026)
-WARNING vaultwarden — 12d remaining (Apr 27 2026)
+OK grafana — 76d remaining (Jun 30 2026)
 OK jellyfin — 76d remaining (Jun 30 2026)
 
 ---
-TOTAL: 4 checked — 3 OK, 1 WARNING, 0 CRITICAL
+TOTAL: 4 checked — 4 OK, 0 WARNING, 0 CRITICAL
 ```
 
 ## Why
